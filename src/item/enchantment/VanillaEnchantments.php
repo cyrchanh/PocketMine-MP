@@ -309,15 +309,19 @@ final class VanillaEnchantments{
 			fn(int $level) : int => 6 * ($level - 1) + 3,
 			15
 		));
-        self::register("QUICK_CHARGE", new Enchantment(
+		self::register("QUICK_CHARGE", new Enchantment(
             KnownTranslationFactory::enchantment_crossbowQuickCharge(),
             Rarity::UNCOMMON,
+            ItemFlags::NONE,
+            ItemFlags::NONE,
             3
         ));
         self::register("MULTISHOT", new Enchantment(
             KnownTranslationFactory::enchantment_crossbowMultishot(),
             Rarity::RARE,
-            1 
+            ItemFlags::NONE,
+            ItemFlags::NONE,
+            1
         ));
         self::register("PIERCING", new Enchantment(
             KnownTranslationFactory::enchantment_crossbowPiercing(),
