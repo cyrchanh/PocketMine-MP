@@ -266,9 +266,7 @@ class Crossbow extends Tool implements ItemUseTickable {
                     -$location->pitch
                 ),
                 $player,
-                $projectileItem instanceof class_exists('\pocketmine\item\PotionArrow')
-                    ? true
-                    : false
+                class_exists('\pocketmine\item\PotionArrow') && $projectileItem instanceof \pocketmine\item\PotionArrow
             );
 
             $arrowEntity->setMotion($direction->normalize()->multiply($power));
