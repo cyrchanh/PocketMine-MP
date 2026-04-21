@@ -1558,9 +1558,21 @@ class Player extends Human implements CommandSender, ChunkListener, IPlayer, Nev
 				$this->blockBreakHandler = null;
 			}
 
-			$item = $this->getInventory()->getItemInHand();
-			if ($this->isUsingItem() && $item instanceof Spear) {
-				$item->onUsingTick($this, $this->getItemUseDuration());
+			if($this->isUsingItem()){
+				$tickableItem = $this->inventory->getItemInHand();
+				if($tickableItem instanceof \pocketmine\item\ItemUseTickable){
+					$tickableReturnedItems = [];
+					$tickableResult = $tickableItem->onUsingTick($this, $this->getItemUseDuration(), $tickableReturnedItems);
+					if($tickableResult !== null){
+						$this->setUsingItem(false);
+						if($tickableResult === ItemUseResult::SUCCESS){
+							$this->inventory->setItemInHand($tickableItem);
+							foreach($tickableReturnedItems as $tickableReturnedItem){
+								$this->inventory->addItem($tickableReturnedItem);
+							}
+						}
+					}
+				}
 			}
 
 			if($this->isUsingItem() && $this->getItemUseDuration() % 4 === 0 && ($item = $this->inventory->getItemInHand()) instanceof ConsumableItem){
