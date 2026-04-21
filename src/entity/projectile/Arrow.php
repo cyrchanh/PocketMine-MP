@@ -100,6 +100,26 @@ class Arrow extends Projectile{
 		$this->networkPropertiesDirty = true;
 	}
 
+	public function setPierceLevel(int $level): void
+    {
+        $this->pierceLevel = $level;
+    }
+
+    public function getPierceLevel(): int
+    {
+        return $this->pierceLevel;
+    }
+
+    public function hasPiercedEntity(int $entityId): bool
+    {
+        return in_array($entityId, $this->piercedEntityIds, true);
+    }
+
+    protected function resetPiercedEntities(): void
+    {
+        $this->piercedEntityIds = [];
+    }
+
 	public function getResultDamage() : int{
 		$base = (int) ceil($this->motion->length() * parent::getResultDamage());
 		if($this->isCritical()){
