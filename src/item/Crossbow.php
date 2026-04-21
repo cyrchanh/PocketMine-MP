@@ -6,302 +6,181 @@ namespace pocketmine\item;
 
 use pocketmine\entity\Location;
 use pocketmine\entity\projectile\Arrow as ArrowEntity;
-use pocketmine\entity\projectile\Projectile;
 use pocketmine\event\entity\ProjectileLaunchEvent;
-use pocketmine\item\enchantment\VanillaEnchantments;
 use pocketmine\math\Vector3;
 use pocketmine\nbt\tag\CompoundTag;
 use pocketmine\nbt\tag\ListTag;
 use pocketmine\player\Player;
 use pocketmine\world\sound\CrossbowLoadingEndSound;
-use pocketmine\world\sound\CrossbowLoadingMiddleSound;
-use pocketmine\world\sound\CrossbowLoadingStartSound;
 use pocketmine\world\sound\CrossbowShootSound;
 
-class Crossbow extends Tool implements ItemUseTickable {
+class Crossbow extends Tool implements Releasable{
 
-    private const BASE_CHARGE_DURATION_SECONDS = 1.25;
+private const BASE_CHARGE_DURATION_TICKS = 25;
+private const ARROW_POWER = 3.15;
 
-    private const ARROW_POWER = 3.15;
+public function getMaxDurability() : int{
+return 465;
+}
 
-    private const FIREWORK_POWER = 1.6;
+public function getChargeDurationTicks() : int{
+return self::BASE_CHARGE_DURATION_TICKS;
+}
 
-    private const START_SOUND_PERCENT = 0.2;
-    private const MID_SOUND_PERCENT = 0.5;
+public function isCharged() : bool{
+$tag = $this->getNamedTag();
+$projectiles = $tag->getListTag("chargedProjectiles");
+return $projectiles !== null && $projectiles->count() > 0;
+}
 
-    private bool $startSoundPlayed = false;
-    private bool $midLoadSoundPlayed = false;
+public function getChargedProjectiles() : array{
+$tag = $this->getNamedTag();
+$projectiles = $tag->getListTag("chargedProjectiles");
+if($projectiles === null){
+return [];
+}
+$items = [];
+foreach($projectiles as $projectileTag){
+if($projectileTag instanceof CompoundTag){
+$item = Item::nbtDeserialize($projectileTag);
+if(!$item->isNull()){
+$items[] = $item;
+}
+}
+}
+return $items;
+}
 
-    public function getMaxDurability(): int {
-        return 465;
-    }
+public function setChargedProjectiles(array $projectiles) : self{
+$tag = $this->getNamedTag();
+if(count($projectiles) === 0){
+$tag->removeTag("chargedProjectiles");
+}else{
+$list = new ListTag();
+foreach($projectiles as $item){
+$list->push($item->nbtSerialize());
+}
+$tag->setTag("chargedProjectiles", $list);
+}
+$this->setNamedTag($tag);
+return $this;
+}
 
-    public function getMaxUseTickLength(): int {
-        return 72000;
-    }
+public function clearChargedProjectiles() : self{
+return $this->setChargedProjectiles([]);
+}
 
-    public function getChargeDurationTicks(): int {
-        $quickChargeLevel = $this->getEnchantmentLevel(VanillaEnchantments::QUICK_CHARGE());
-        $durationSeconds = self::BASE_CHARGE_DURATION_SECONDS - ($quickChargeLevel * 0.25);
-        return (int) floor(max($durationSeconds, 0.0) * 20);
-    }
+public function onClickAir(Player $player, Vector3 $directionVector, array &$returnedItems) : ItemUseResult{
+if($this->isCharged()){
+$this->performShooting($player, $directionVector);
+return ItemUseResult::SUCCESS;
+}
 
-    public function isCharged(): bool {
-        $tag = $this->getNamedTag();
-        $projectiles = $tag->getListTag("chargedProjectiles");
-        return $projectiles !== null && !$projectiles->empty();
-    }
+// Return NONE (not SUCCESS) so the framework doesn't send an inventory
+// update that would cause the client to restart the charging animation.
+// This matches how Bow behaves — it never overrides onClickAir at all.
+return ItemUseResult::NONE;
+}
 
-    public function getChargedProjectiles(): array {
-        $tag = $this->getNamedTag();
-        $projectiles = $tag->getListTag("chargedProjectiles");
-        if ($projectiles === null) {
-            return [];
-        }
+public function onReleaseUsing(Player $player, array &$returnedItems) : ItemUseResult{
+if($this->isCharged()){
+return ItemUseResult::FAIL;
+}
 
-        $items = [];
-        foreach ($projectiles as $projectileTag) {
-            $item = Item::nbtDeserialize($projectileTag);
-            if (!$item->isNull()) {
-                $items[] = $item;
-            }
-        }
-        return $items;
-    }
+$ticksUsed = $player->getItemUseDuration();
+if($ticksUsed >= $this->getChargeDurationTicks()){
+if($this->tryLoadProjectile($player)){
+$player->getWorld()->addSound($player->getPosition(), new CrossbowLoadingEndSound());
+return ItemUseResult::SUCCESS;
+}
+}
 
-    public function setChargedProjectiles(array $projectiles): self {
-        $tag = $this->getNamedTag();
-        if (empty($projectiles)) {
-            $tag->removeTag("chargedProjectiles");
-        } else {
-            $list = new ListTag();
-            foreach ($projectiles as $item) {
-                $list->push($item->nbtSerialize());
-            }
-            $tag->setTag("chargedProjectiles", $list);
-        }
-        $this->setNamedTag($tag);
-        return $this;
-    }
+return ItemUseResult::FAIL;
+}
 
-    public function clearChargedProjectiles(): self {
-        return $this->setChargedProjectiles([]);
-    }
+private function findAmmo(Player $player) : ?Item{
+$offhand = $player->getOffHandInventory()->getItem(0);
+if($offhand instanceof Arrow){
+return $offhand;
+}
 
-    public function onClickAir(Player $player, Vector3 $directionVector, array &$returnedItems): ItemUseResult {
-        if ($this->isCharged()) {
-            $this->performShooting($player, $directionVector, $returnedItems);
-            return ItemUseResult::SUCCESS;
-        }
+foreach($player->getInventory()->getContents() as $item){
+if($item instanceof Arrow){
+return $item;
+}
+}
 
-        $projectile = $this->findAmmo($player);
-        if ($projectile !== null) {
-            $this->startSoundPlayed = false;
-            $this->midLoadSoundPlayed = false;
-            return ItemUseResult::SUCCESS;
-        }
+if($player->isCreative()){
+return VanillaItems::ARROW();
+}
 
-        return ItemUseResult::FAIL;
-    }
+return null;
+}
 
-    public function onUsingTick(Player $player, int $ticksUsed, array &$returnedItems): ?ItemUseResult {
-        $chargeDuration = $this->getChargeDurationTicks();
-        $chargePercent = $chargeDuration > 0 ? ($ticksUsed / $chargeDuration) : 1.0;
+private function tryLoadProjectile(Player $player) : bool{
+$ammo = $this->findAmmo($player);
+if($ammo === null){
+return false;
+}
 
-        if ($chargePercent < self::START_SOUND_PERCENT) {
-            $this->startSoundPlayed = false;
-            $this->midLoadSoundPlayed = false;
-        }
+$projectileCopy = clone $ammo;
+$projectileCopy->setCount(1);
+$this->setChargedProjectiles([$projectileCopy]);
 
-        if ($chargePercent >= self::START_SOUND_PERCENT && !$this->startSoundPlayed) {
-            $this->startSoundPlayed = true;
-            $player->getWorld()->addSound($player->getPosition(), new CrossbowLoadingStartSound());
-        }
+if(!$player->isCreative()){
+$ammoToRemove = clone $ammo;
+$ammoToRemove->setCount(1);
+$player->getInventory()->removeItem($ammoToRemove);
+}
 
-        if ($chargePercent >= self::MID_SOUND_PERCENT && !$this->midLoadSoundPlayed) {
-            $this->midLoadSoundPlayed = true;
-            $player->getWorld()->addSound($player->getPosition(), new CrossbowLoadingMiddleSound());
-        }
+return true;
+}
 
-        if ($chargePercent >= 1.0 && !$this->isCharged()) {
-            if ($this->tryLoadProjectile($player)) {
-                $player->getWorld()->addSound($player->getPosition(), new CrossbowLoadingEndSound());
-                return ItemUseResult::SUCCESS;
-            }
-            return ItemUseResult::FAIL;
-        }
+private function performShooting(Player $player, Vector3 $directionVector) : void{
+$chargedProjectiles = $this->getChargedProjectiles();
+if(count($chargedProjectiles) === 0){
+return;
+}
 
-        return null;
-    }
+$this->clearChargedProjectiles();
+$location = $player->getLocation();
 
-    public function onReleaseUsing(Player $player, array &$returnedItems): ItemUseResult {
-        if ($this->isCharged()) {
-            return ItemUseResult::SUCCESS;
-        }
+foreach($chargedProjectiles as $projectileItem){
+$arrowEntity = new ArrowEntity(
+Location::fromObject(
+$player->getEyePos(),
+$player->getWorld(),
+($location->yaw > 180 ? 360 : 0) - $location->yaw,
+-$location->pitch
+),
+$player,
+false
+);
 
-        return ItemUseResult::FAIL;
-    }
+$arrowEntity->setMotion($directionVector->normalize()->multiply(self::ARROW_POWER));
 
-    private function findAmmo(Player $player): ?Item {
-        $offhand = $player->getOffHandInventory()->getItem(0);
-        if ($this->isValidHeldProjectile($offhand)) {
-            return $offhand;
-        }
+$ev = new ProjectileLaunchEvent($arrowEntity);
+$ev->call();
+if($ev->isCancelled()){
+$arrowEntity->flagForDespawn();
+continue;
+}
 
-        foreach ($player->getInventory()->getContents() as $item) {
-            if ($this->isValidProjectile($item)) {
-                return $item;
-            }
-        }
+$arrowEntity->spawnToAll();
+}
 
-        if ($player->isCreative()) {
-            return VanillaItems::ARROW();
-        }
+$player->getWorld()->addSound($player->getPosition(), new CrossbowShootSound());
 
-        return null;
-    }
+if(!$player->isCreative()){
+$this->applyDamage(1);
+}
+}
 
-    private function isValidProjectile(Item $item): bool {
-        return $item instanceof Arrow;
-    }
+public function canStartUsingItem(Player $player) : bool{
+return !$this->isCharged() && $this->findAmmo($player) !== null;
+}
 
-    private function isValidHeldProjectile(Item $item): bool {
-        return $item instanceof Arrow || $item instanceof FireworkRocket;
-    }
-
-    private function tryLoadProjectile(Player $player): bool {
-        $ammo = $this->findAmmo($player);
-        if ($ammo === null) {
-            return false;
-        }
-
-        $multishotLevel = $this->getEnchantmentLevel(VanillaEnchantments::MULTISHOT());
-        $projectileCount = $multishotLevel > 0 ? 3 : 1;
-
-        $projectiles = [];
-        for ($i = 0; $i < $projectileCount; $i++) {
-            $projectileCopy = clone $ammo;
-            $projectileCopy->setCount(1);
-            $projectiles[] = $projectileCopy;
-        }
-
-        $this->setChargedProjectiles($projectiles);
-
-        if (!$player->isCreative()) {
-            $ammo->setCount($ammo->getCount() - 1);
-        }
-
-        return true;
-    }
-
-    private function performShooting(Player $player, Vector3 $directionVector, array &$returnedItems): void {
-        $chargedProjectiles = $this->getChargedProjectiles();
-        if (empty($chargedProjectiles)) {
-            return;
-        }
-
-        $this->clearChargedProjectiles();
-
-        $isMultishot = count($chargedProjectiles) > 1;
-        $angles = $isMultishot ? [-10.0, 0.0, 10.0] : [0.0];
-
-        $location = $player->getLocation();
-
-        foreach ($chargedProjectiles as $index => $projectileItem) {
-            $angle = $angles[$index] ?? 0.0;
-
-            $power = ($projectileItem instanceof FireworkRocket)
-                ? self::FIREWORK_POWER
-                : self::ARROW_POWER;
-
-            $projectileEntity = $this->createProjectileEntity(
-                $player,
-                $projectileItem,
-                $location,
-                $directionVector,
-                $power,
-                $angle
-            );
-
-            if ($projectileEntity === null) {
-                continue;
-            }
-
-            if ($isMultishot && $index !== 1 && $projectileEntity instanceof ArrowEntity) {
-                $projectileEntity->setPickupMode(ArrowEntity::PICKUP_CREATIVE);
-            }
-
-            $ev = new ProjectileLaunchEvent($projectileEntity);
-            $ev->call();
-            if ($ev->isCancelled()) {
-                $projectileEntity->flagForDespawn();
-                continue;
-            }
-
-            $player->getWorld()->addEntity($projectileEntity);
-        }
-
-        $player->getWorld()->addSound($player->getPosition(), new CrossbowShootSound());
-
-        $durabilityUse = $this->getDurabilityUseForProjectile($chargedProjectiles[0] ?? null);
-        $this->applyDamage($durabilityUse);
-    }
-
-    private function createProjectileEntity(
-        Player $player,
-        Item $projectileItem,
-        Location $location,
-        Vector3 $directionVector,
-        float $power,
-        float $angleOffset
-    ): ?Projectile {
-        $direction = $this->rotateVectorByAngle($directionVector, $angleOffset, $player);
-
-        if ($projectileItem instanceof Arrow) {
-            $arrowEntity = new ArrowEntity(
-                Location::fromObject(
-                    $player->getEyePos(),
-                    $player->getWorld(),
-                    ($location->yaw > 180 ? 360 : 0) - $location->yaw,
-                    -$location->pitch
-                ),
-                $player,
-                class_exists('\pocketmine\item\PotionArrow') && $projectileItem instanceof \pocketmine\item\PotionArrow
-            );
-
-            $arrowEntity->setMotion($direction->normalize()->multiply($power));
-
-            return $arrowEntity;
-        }
-
-        return null;
-    }
-
-    private function rotateVectorByAngle(Vector3 $direction, float $angleDegrees, Player $player): Vector3 {
-        if (abs($angleDegrees) < 0.001) {
-            return $direction;
-        }
-
-        $angleRadians = deg2rad($angleDegrees);
-
-        $cos = cos($angleRadians);
-        $sin = sin($angleRadians);
-
-        return new Vector3(
-            $direction->x * $cos - $direction->z * $sin,
-            $direction->y,
-            $direction->x * $sin + $direction->z * $cos
-        );
-    }
-
-    private function getDurabilityUseForProjectile(?Item $projectile): int {
-        if ($projectile instanceof FireworkRocket) {
-            return 3;
-        }
-        return 1;
-    }
-
-    public function getFuelTime(): int {
-        return 0;
-    }
+public function getFuelTime() : int{
+return 0;
+}
 }
