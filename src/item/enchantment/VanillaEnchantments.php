@@ -323,9 +323,11 @@ final class VanillaEnchantments{
             ItemFlags::NONE,
             1
         ));
-        self::register("PIERCING", new Enchantment(
+		self::register("PIERCING", new Enchantment(
             KnownTranslationFactory::enchantment_crossbowPiercing(),
             Rarity::COMMON,
+            ItemFlags::NONE,
+            ItemFlags::NONE,
             4
         ));
 	}
