@@ -7,6 +7,7 @@ namespace pocketmine\item;
 use pocketmine\entity\Location;
 use pocketmine\entity\projectile\Arrow as ArrowEntity;
 use pocketmine\event\entity\ProjectileLaunchEvent;
+use pocketmine\item\enchantment\VanillaEnchantments;
 use pocketmine\math\Vector3;
 use pocketmine\nbt\tag\CompoundTag;
 use pocketmine\network\mcpe\protocol\PlaySoundPacket;
@@ -16,8 +17,10 @@ class Crossbow extends Tool implements Releasable
 {
 
     private const BASE_CHARGE_DURATION_TICKS = 25;
+    private const CHARGE_REDUCTION_PER_LEVEL = 5;
     private const ARROW_POWER = 3.15;
     private const CLICK_GAP_THRESHOLD = 5;
+    private const MULTISHOT_SPREAD_DEGREES = 10.0;
 
     private static array $chargeStartTicks = [];
     private static array $justFired = [];
@@ -30,7 +33,8 @@ class Crossbow extends Tool implements Releasable
 
     public function getChargeDurationTicks(): int
     {
-        return self::BASE_CHARGE_DURATION_TICKS;
+        $quickChargeLevel = $this->getEnchantmentLevel(VanillaEnchantments::QUICK_CHARGE());
+        return max(0, self::BASE_CHARGE_DURATION_TICKS - ($quickChargeLevel * self::CHARGE_REDUCTION_PER_LEVEL));
     }
 
     public function isCharged(): bool
@@ -65,6 +69,17 @@ class Crossbow extends Tool implements Releasable
         }
     }
 
+    private function getLoadingStartSound(): string
+    {
+        $quickChargeLevel = $this->getEnchantmentLevel(VanillaEnchantments::QUICK_CHARGE());
+        return match ($quickChargeLevel) {
+            1 => "item.crossbow.quick_charge.1",
+            2 => "item.crossbow.quick_charge.2",
+            3 => "item.crossbow.quick_charge.3",
+            default => "item.crossbow.loading_start",
+        };
+    }
+
     public function onClickAir(Player $player, Vector3 $directionVector, array &$returnedItems): ItemUseResult
     {
         $name = $player->getName();
@@ -92,7 +107,7 @@ class Crossbow extends Tool implements Releasable
                 return ItemUseResult::FAIL;
             }
             self::$chargeStartTicks[$name] = $currentTick;
-            $this->playCrossbowSound($player, "item.crossbow.loading_start");
+            $this->playCrossbowSound($player, $this->getLoadingStartSound());
             return ItemUseResult::NONE;
         }
 
@@ -180,13 +195,8 @@ class Crossbow extends Tool implements Releasable
         return true;
     }
 
-    private function performShooting(Player $player, Vector3 $directionVector): void
+    private function createArrowEntity(Player $player, Vector3 $directionVector, bool $isMainArrow): ArrowEntity
     {
-        if (!$this->isCharged()) {
-            return;
-        }
-
-        $this->clearChargedItem();
         $location = $player->getLocation();
 
         $arrowEntity = new ArrowEntity(
@@ -202,18 +212,76 @@ class Crossbow extends Tool implements Releasable
 
         $arrowEntity->setMotion($directionVector->normalize()->multiply(self::ARROW_POWER));
 
-        $ev = new ProjectileLaunchEvent($arrowEntity);
-        $ev->call();
-        if ($ev->isCancelled()) {
-            $arrowEntity->flagForDespawn();
+        // Piercing enchantment: set pierce level on the arrow entity
+        $piercingLevel = $this->getEnchantmentLevel(VanillaEnchantments::PIERCING());
+        if ($piercingLevel > 0) {
+            $arrowEntity->setPierceLevel($piercingLevel);
+        }
+
+        // Multishot extra arrows cannot be picked up (only the center arrow can)
+        if (!$isMainArrow) {
+            $arrowEntity->setPickupMode(ArrowEntity::PICKUP_CREATIVE);
+        }
+
+        return $arrowEntity;
+    }
+
+    private function rotateDirectionY(Vector3 $direction, float $angleDegrees): Vector3
+    {
+        if (abs($angleDegrees) < 0.001) {
+            return $direction;
+        }
+
+        $angleRad = deg2rad($angleDegrees);
+        $cos = cos($angleRad);
+        $sin = sin($angleRad);
+
+        return new Vector3(
+            $direction->x * $cos + $direction->z * $sin,
+            $direction->y,
+            -$direction->x * $sin + $direction->z * $cos
+        );
+    }
+
+    private function performShooting(Player $player, Vector3 $directionVector): void
+    {
+        if (!$this->isCharged()) {
             return;
         }
 
-        $arrowEntity->spawnToAll();
+        $this->clearChargedItem();
+
+        // Multishot: fire 3 arrows at 0°, +10°, -10° spread
+        $multishotLevel = $this->getEnchantmentLevel(VanillaEnchantments::MULTISHOT());
+        $hasMultishot = $multishotLevel > 0;
+        $projectileCount = $hasMultishot ? 3 : 1;
+
+        $angles = $hasMultishot
+            ? [0.0, self::MULTISHOT_SPREAD_DEGREES, -self::MULTISHOT_SPREAD_DEGREES]
+            : [0.0];
+
+        for ($i = 0; $i < $projectileCount; $i++) {
+            $shotDirection = $this->rotateDirectionY($directionVector, $angles[$i]);
+            $isMainArrow = ($i === 0);
+
+            $arrowEntity = $this->createArrowEntity($player, $shotDirection, $isMainArrow);
+
+            $ev = new ProjectileLaunchEvent($arrowEntity);
+            $ev->call();
+            if ($ev->isCancelled()) {
+                $arrowEntity->flagForDespawn();
+                continue;
+            }
+
+            $arrowEntity->spawnToAll();
+        }
+
         $this->playCrossbowSound($player, "item.crossbow.shoot");
 
         if (!$player->isCreative()) {
-            $this->applyDamage(1);
+            // Multishot uses 3 durability per shot, normal uses 1
+            $durabilityUse = $hasMultishot ? 3 : 1;
+            $this->applyDamage($durabilityUse);
         }
     }
 

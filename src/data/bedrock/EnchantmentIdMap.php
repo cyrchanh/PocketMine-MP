@@ -70,5 +70,9 @@ final class EnchantmentIdMap{
 		$this->register(EnchantmentIds::FROST_WALKER, VanillaEnchantments::FROST_WALKER());
 
 		$this->register(EnchantmentIds::LUNGE, VanillaEnchantments::LUNGE());
+
+        $this->register(EnchantmentIds::MULTISHOT, VanillaEnchantments::MULTISHOT());
+        $this->register(EnchantmentIds::PIERCING, VanillaEnchantments::PIERCING());
+        $this->register(EnchantmentIds::QUICK_CHARGE, VanillaEnchantments::QUICK_CHARGE());
 	}
 }

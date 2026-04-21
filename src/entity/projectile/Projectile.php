@@ -189,6 +189,10 @@ abstract class Projectile extends Entity{
 				continue;
 			}
 
+            if ($this instanceof Arrow && $this->hasPiercedEntity($entity->getId())) {
+                continue;
+            }
+
 			$entityBB = $entity->boundingBox->expandedCopy(0.3, 0.3, 0.3);
 			$entityHitResult = $entityBB->calculateIntercept($start, $end);
 

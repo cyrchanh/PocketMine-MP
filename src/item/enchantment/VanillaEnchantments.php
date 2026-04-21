@@ -309,6 +309,27 @@ final class VanillaEnchantments{
 			fn(int $level) : int => 6 * ($level - 1) + 3,
 			15
 		));
+		self::register("QUICK_CHARGE", new Enchantment(
+            KnownTranslationFactory::enchantment_crossbowQuickCharge(),
+            Rarity::UNCOMMON,
+            ItemFlags::NONE,
+            ItemFlags::NONE,
+            3
+        ));
+        self::register("MULTISHOT", new Enchantment(
+            KnownTranslationFactory::enchantment_crossbowMultishot(),
+            Rarity::RARE,
+            ItemFlags::NONE,
+            ItemFlags::NONE,
+            1
+        ));
+		self::register("PIERCING", new Enchantment(
+            KnownTranslationFactory::enchantment_crossbowPiercing(),
+            Rarity::COMMON,
+            ItemFlags::NONE,
+            ItemFlags::NONE,
+            4
+        ));
 	}
 
 	protected static function register(string $name, Enchantment $member) : void{

@@ -61,6 +61,8 @@ class Arrow extends Projectile{
 	protected float $punchKnockback = 0.0;
 	protected int $collideTicks = 0;
 	protected bool $critical = false;
+    protected int $pierceLevel = 0;
+    protected array $piercedEntityIds = [];
 
 	public function __construct(Location $location, ?Entity $shootingEntity, bool $critical, ?CompoundTag $nbt = null){
 		parent::__construct($location, $shootingEntity, $nbt);
@@ -78,6 +80,7 @@ class Arrow extends Projectile{
 
 		$this->pickupMode = $nbt->getByte(self::TAG_PICKUP, self::PICKUP_ANY);
 		$this->critical = $nbt->getByte(self::TAG_CRIT, 0) === 1;
+		$this->pierceLevel = $nbt->getByte("PierceLevel", 0);
 		$this->collideTicks = $nbt->getShort(self::TAG_LIFE, $this->collideTicks);
 	}
 
@@ -85,6 +88,7 @@ class Arrow extends Projectile{
 		$nbt = parent::saveNBT();
 		$nbt->setByte(self::TAG_PICKUP, $this->pickupMode);
 		$nbt->setByte(self::TAG_CRIT, $this->critical ? 1 : 0);
+		$nbt->setByte("PierceLevel", $this->pierceLevel);
 		$nbt->setShort(self::TAG_LIFE, $this->collideTicks);
 		return $nbt;
 	}
@@ -97,6 +101,26 @@ class Arrow extends Projectile{
 		$this->critical = $value;
 		$this->networkPropertiesDirty = true;
 	}
+
+	public function setPierceLevel(int $level): void
+    {
+        $this->pierceLevel = $level;
+    }
+
+    public function getPierceLevel(): int
+    {
+        return $this->pierceLevel;
+    }
+
+    public function hasPiercedEntity(int $entityId): bool
+    {
+        return in_array($entityId, $this->piercedEntityIds, true);
+    }
+
+    protected function resetPiercedEntities(): void
+    {
+        $this->piercedEntityIds = [];
+    }
 
 	public function getResultDamage() : int{
 		$base = (int) ceil($this->motion->length() * parent::getResultDamage());
@@ -140,19 +164,58 @@ class Arrow extends Projectile{
 		$this->broadcastSound(new ArrowHitSound());
 	}
 
-	protected function onHitBlock(Block $blockHit, RayTraceResult $hitResult) : void{
+	public function onHitBlock(Block $blockHit, RayTraceResult $hitResult): void{
 		parent::onHitBlock($blockHit, $hitResult);
-		$this->broadcastAnimation(new ArrowShakeAnimation($this, 7));
+
+		// PIERCING: reset pierce tracking when arrow embeds in a block
+		$this->pierceLevel = 0;
+		$this->resetPiercedEntities();
+
+		$this->broadcastSound(new ArrowHitSound());
+		$this->collideTicks = 0;
 	}
 
-	protected function onHitEntity(Entity $entityHit, RayTraceResult $hitResult) : void{
+	public function onHitEntity(Entity $entityHit, RayTraceResult $hitResult): void{
+		if ($this->hasPiercedEntity($entityHit->getId())) {
+			return;
+		}
+
 		parent::onHitEntity($entityHit, $hitResult);
-		if($this->punchKnockback > 0){
-			$horizontalSpeed = sqrt($this->motion->x ** 2 + $this->motion->z ** 2);
-			if($horizontalSpeed > 0){
-				$multiplier = $this->punchKnockback * 0.6 / $horizontalSpeed;
-				$entityHit->setMotion($entityHit->getMotion()->add($this->motion->x * $multiplier, 0.1, $this->motion->z * $multiplier));
+
+		$damage = $this->getResultDamage();
+
+		if ($damage >= 0) {
+			if ($this->critical) {
+				$damage += mt_rand(0, (int) ($damage / 2) + 1);
 			}
+
+			$ev = new EntityDamageByEntityEvent($this->getOwningEntity() ?? $this, $entityHit, EntityDamageEvent::CAUSE_PROJECTILE, $damage);
+
+			$entityHit->attack($ev);
+
+			if ($this->punchKnockback > 0) {
+				$horizontalSpeed = sqrt($this->motion->x ** 2 + $this->motion->z ** 2);
+				if ($horizontalSpeed > 0) {
+					$multiplier = $this->punchKnockback * 0.6 / $horizontalSpeed;
+					$entityHit->setMotion($entityHit->getMotion()->add($this->motion->x * $multiplier, 0.1, $this->motion->z * $multiplier));
+				}
+			}
+
+			if ($this->isOnFire()) {
+				$entityHit->setOnFire(5);
+			}
+
+			if ($this->pierceLevel > 0) {
+				$this->piercedEntityIds[] = $entityHit->getId();
+
+				if (count($this->piercedEntityIds) > $this->pierceLevel) {
+					$this->flagForDespawn();
+				}
+			} else {
+				$this->flagForDespawn();
+			}
+
+			$this->broadcastSound(new ArrowHitSound());
 		}
 	}
 
