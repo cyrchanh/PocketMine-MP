@@ -35,7 +35,7 @@ use pocketmine\world\sound\SpearAttackHitSound;
 use pocketmine\world\sound\SpearAttackMissSound;
 use pocketmine\world\sound\SpearLungeSound;
 
-class Spear extends TieredTool implements Releasable {
+class Spear extends TieredTool implements Releasable, ItemUseTickable {
 
 	const MINIMUM_VELOCITY_DAMAGE = 4.6;
 	const MINIMUM_VELOCITY_KNOCKBACK = 5.1;
@@ -63,26 +63,27 @@ class Spear extends TieredTool implements Releasable {
 		return BlockToolType::SPEAR;
 	}
 
-	public function onUsingTick(Player $player, int $ticksUsed): void {
-		$secondsUsed = ($ticksUsed / 20);
-		$activationDelay = self::getTierActivationDelay();
-
-		if ($secondsUsed >= self::MAX_HOLD_DURATION) {
-			$this->stage = self::STAGE_NONE;
-			$player->setUsingItem(false);
-			return;
-		}
-		if ($secondsUsed >= self::STAGE_DISENGAGED_DELAY) {
-			$this->stage = self::STAGE_DISENGAGED;
-		} elseif ($secondsUsed >= self::STAGE_TIRED_DELAY) {
-			$this->stage = self::STAGE_TIRED;
-		} elseif ($secondsUsed >= $activationDelay) {
-			$this->stage = self::STAGE_ENGAGED;
-		}
-
-		if ($this->stage >= self::STAGE_ENGAGED) {
-			$this->handleChargeAttack($player);
-		}
+	public function onUsingTick(Player $player, int $ticksUsed, array &$returnedItems): ?ItemUseResult {
+	    $secondsUsed = ($ticksUsed / 20);
+	    $activationDelay = self::getTierActivationDelay();
+	
+	    if ($secondsUsed >= self::MAX_HOLD_DURATION) {
+	        $this->stage = self::STAGE_NONE;
+	        return ItemUseResult::FAIL;
+	    }
+	    if ($secondsUsed >= self::STAGE_DISENGAGED_DELAY) {
+	        $this->stage = self::STAGE_DISENGAGED;
+	    } elseif ($secondsUsed >= self::STAGE_TIRED_DELAY) {
+	        $this->stage = self::STAGE_TIRED;
+	    } elseif ($secondsUsed >= $activationDelay) {
+	        $this->stage = self::STAGE_ENGAGED;
+	    }
+	
+	    if ($this->stage >= self::STAGE_ENGAGED) {
+	        $this->handleChargeAttack($player);
+	    }
+	
+	    return null;
 	}
 
 	private function handleChargeAttack(Player $player): void {

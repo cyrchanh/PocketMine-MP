@@ -1558,9 +1558,21 @@ class Player extends Human implements CommandSender, ChunkListener, IPlayer, Nev
 				$this->blockBreakHandler = null;
 			}
 
-			$item = $this->getInventory()->getItemInHand();
-			if ($this->isUsingItem() && $item instanceof Spear) {
-				$item->onUsingTick($this, $this->getItemUseDuration());
+			if($this->isUsingItem()){
+				$tickableItem = $this->inventory->getItemInHand();
+				if($tickableItem instanceof \pocketmine\item\ItemUseTickable){
+					$tickableReturnedItems = [];
+					$tickableResult = $tickableItem->onUsingTick($this, $this->getItemUseDuration(), $tickableReturnedItems);
+					if($tickableResult !== null){
+						$this->setUsingItem(false);
+						if($tickableResult === ItemUseResult::SUCCESS){
+							$this->inventory->setItemInHand($tickableItem);
+							foreach($tickableReturnedItems as $tickableReturnedItem){
+								$this->inventory->addItem($tickableReturnedItem);
+							}
+						}
+					}
+				}
 			}
 
 			if($this->isUsingItem() && $this->getItemUseDuration() % 4 === 0 && ($item = $this->inventory->getItemInHand()) instanceof ConsumableItem){
@@ -1760,7 +1772,8 @@ class Player extends Human implements CommandSender, ChunkListener, IPlayer, Nev
 		if($slot instanceof ConsumableItem){
 			$oldItem = clone $slot;
 
-			$ev = new PlayerItemConsumeEvent($this, $slot);
+			$residue = $slot->getResidue();
+			$ev = new PlayerItemConsumeEvent($this, $slot, $residue->isNull() ? [] : [$residue]);
 			if($this->hasItemCooldown($slot)){
 				$ev->cancel();
 			}
@@ -1774,7 +1787,7 @@ class Player extends Human implements CommandSender, ChunkListener, IPlayer, Nev
 			$this->resetItemCooldown($oldItem);
 
 			$slot->pop();
-			$this->returnItemsFromAction($oldItem, $slot, [$slot->getResidue()]);
+			$this->returnItemsFromAction($oldItem, $slot, $ev->getResidue());
 
 			return true;
 		}
