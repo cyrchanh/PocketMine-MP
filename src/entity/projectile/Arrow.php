@@ -61,6 +61,8 @@ class Arrow extends Projectile{
 	protected float $punchKnockback = 0.0;
 	protected int $collideTicks = 0;
 	protected bool $critical = false;
+    protected int $pierceLevel = 0;
+    protected array $piercedEntityIds = [];
 
 	public function __construct(Location $location, ?Entity $shootingEntity, bool $critical, ?CompoundTag $nbt = null){
 		parent::__construct($location, $shootingEntity, $nbt);
