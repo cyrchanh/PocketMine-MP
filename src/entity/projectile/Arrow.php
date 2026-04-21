@@ -167,16 +167,50 @@ class Arrow extends Projectile{
 		$this->broadcastAnimation(new ArrowShakeAnimation($this, 7));
 	}
 
-	protected function onHitEntity(Entity $entityHit, RayTraceResult $hitResult) : void{
-		parent::onHitEntity($entityHit, $hitResult);
-		if($this->punchKnockback > 0){
-			$horizontalSpeed = sqrt($this->motion->x ** 2 + $this->motion->z ** 2);
-			if($horizontalSpeed > 0){
-				$multiplier = $this->punchKnockback * 0.6 / $horizontalSpeed;
-				$entityHit->setMotion($entityHit->getMotion()->add($this->motion->x * $multiplier, 0.1, $this->motion->z * $multiplier));
-			}
-		}
-	}
+public function onHitEntity(Entity $entityHit, RayTraceResult $hitResult): void
+    {
+        if ($this->hasPiercedEntity($entityHit->getId())) {
+            return;
+        }
+
+        parent::onHitEntity($entityHit, $hitResult);
+
+        $damage = $this->getResultDamage();
+
+        if ($damage >= 0) {
+            if ($this->critical) {
+                $damage += mt_rand(0, (int) ($damage / 2) + 1);
+            }
+
+            $ev = new EntityDamageByEntityEvent($this->getOwningEntity() ?? $this, $entityHit, EntityDamageEvent::CAUSE_PROJECTILE, $damage);
+
+            $entityHit->attack($ev);
+
+            if ($this->punchKnockback > 0) {
+                $horizontalSpeed = sqrt($this->motion->x ** 2 + $this->motion->z ** 2);
+                if ($horizontalSpeed > 0) {
+                    $multiplier = $this->punchKnockback * 0.6 / $horizontalSpeed;
+                    $entityHit->setMotion($entityHit->getMotion()->add($this->motion->x * $multiplier, 0.1, $this->motion->z * $multiplier));
+                }
+            }
+
+            if ($this->isOnFire()) {
+                $entityHit->setOnFire(5);
+            }
+
+            if ($this->pierceLevel > 0) {
+                $this->piercedEntityIds[] = $entityHit->getId();
+
+                if (count($this->piercedEntityIds) > $this->pierceLevel) {
+                    $this->flagForDespawn();
+                }
+            } else {
+                $this->flagForDespawn();
+            }
+
+            $this->broadcastSound(new ArrowHitSound());
+        }
+    }
 
 	public function getPickupMode() : int{
 		return $this->pickupMode;
