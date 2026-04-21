@@ -9,23 +9,19 @@ use pocketmine\entity\projectile\Arrow as ArrowEntity;
 use pocketmine\event\entity\ProjectileLaunchEvent;
 use pocketmine\math\Vector3;
 use pocketmine\nbt\tag\CompoundTag;
-use pocketmine\nbt\tag\ListTag;
+use pocketmine\network\mcpe\protocol\PlaySoundPacket;
 use pocketmine\player\Player;
-use pocketmine\world\sound\CrossbowLoadingEndSound;
-use pocketmine\world\sound\CrossbowShootSound;
 
 class Crossbow extends Tool implements Releasable
 {
 
     private const BASE_CHARGE_DURATION_TICKS = 25;
     private const ARROW_POWER = 3.15;
+    private const CLICK_GAP_THRESHOLD = 5;
 
-    /**
-     * Track charge start time per player, independent of isUsingItem flag
-     * which gets reset by inventory sync.
-     * @var array<string, int>
-     */
     private static array $chargeStartTicks = [];
+    private static array $justFired = [];
+    private static array $loadedDuringHold = [];
 
     public function getMaxDurability(): int
     {
@@ -39,88 +35,89 @@ class Crossbow extends Tool implements Releasable
 
     public function isCharged(): bool
     {
-        $tag = $this->getNamedTag();
-        $projectiles = $tag->getListTag("chargedProjectiles");
-        return $projectiles !== null && $projectiles->count() > 0;
+        return $this->getNamedTag()->getCompoundTag("chargedItem") !== null;
     }
 
-    public function getChargedProjectiles(): array
+    public function setChargedItem(?Item $item): self
     {
         $tag = $this->getNamedTag();
-        $projectiles = $tag->getListTag("chargedProjectiles");
-        if ($projectiles === null) {
-            return [];
-        }
-        $items = [];
-        foreach ($projectiles as $projectileTag) {
-            if ($projectileTag instanceof CompoundTag) {
-                $item = Item::nbtDeserialize($projectileTag);
-                if (!$item->isNull()) {
-                    $items[] = $item;
-                }
-            }
-        }
-        return $items;
-    }
-
-    public function setChargedProjectiles(array $projectiles): self
-    {
-        $tag = $this->getNamedTag();
-        if (count($projectiles) === 0) {
-            $tag->removeTag("chargedProjectiles");
+        if ($item === null || $item->isNull()) {
+            $tag->removeTag("chargedItem");
         } else {
-            $list = new ListTag();
-            foreach ($projectiles as $item) {
-                $list->push($item->nbtSerialize());
-            }
-            $tag->setTag("chargedProjectiles", $list);
+            $tag->setTag("chargedItem", $item->nbtSerialize());
         }
         $this->setNamedTag($tag);
         return $this;
     }
 
-    public function clearChargedProjectiles(): self
+    public function clearChargedItem(): self
     {
-        return $this->setChargedProjectiles([]);
+        return $this->setChargedItem(null);
+    }
+
+    private function playCrossbowSound(Player $player, string $soundName, float $volume = 1.0, float $pitch = 1.0): void
+    {
+        $pos = $player->getPosition();
+        $pk = PlaySoundPacket::create($soundName, $pos->x, $pos->y, $pos->z, $volume, $pitch);
+        $player->getNetworkSession()->sendDataPacket($pk);
+        foreach ($player->getViewers() as $viewer) {
+            $viewer->getNetworkSession()->sendDataPacket($pk);
+        }
     }
 
     public function onClickAir(Player $player, Vector3 $directionVector, array &$returnedItems): ItemUseResult
     {
         $name = $player->getName();
+        $currentTick = $player->getServer()->getTick();
 
         if ($this->isCharged()) {
+            if (isset(self::$loadedDuringHold[$name])) {
+                $gap = $currentTick - self::$loadedDuringHold[$name];
+                if ($gap <= self::CLICK_GAP_THRESHOLD) {
+                    self::$loadedDuringHold[$name] = $currentTick;
+                    return ItemUseResult::FAIL;
+                }
+                unset(self::$loadedDuringHold[$name]);
+            }
+
             unset(self::$chargeStartTicks[$name]);
+            self::$justFired[$name] = true;
             $this->performShooting($player, $directionVector);
-            $player->getServer()->getLogger()->info("[CROSSBOW] Fired!");
+            $player->getInventory()->setItemInHand($this);
             return ItemUseResult::SUCCESS;
         }
 
-        // Only record the charge start on the FIRST click — don't restart on repeated clicks
         if (!isset(self::$chargeStartTicks[$name])) {
-            self::$chargeStartTicks[$name] = $player->getServer()->getTick();
-            $player->getServer()->getLogger()->info("[CROSSBOW] Charge started at tick " . self::$chargeStartTicks[$name]);
-        } else {
-            $elapsed = $player->getServer()->getTick() - self::$chargeStartTicks[$name];
-            $player->getServer()->getLogger()->info("[CROSSBOW] Charge continuing, elapsed=$elapsed ticks");
-
-            // Auto-load if we've been charging long enough (client sent another CLICK_AIR
-// but we've already reached the charge threshold)
-            if ($elapsed >= $this->getChargeDurationTicks()) {
-                if ($this->tryLoadProjectile($player)) {
-                    $player->getServer()->getLogger()->info("[CROSSBOW] Auto-loaded (charge complete during hold)!");
-                    $player->getWorld()->addSound($player->getPosition(), new CrossbowLoadingEndSound());
-                    unset(self::$chargeStartTicks[$name]);
-                    return ItemUseResult::SUCCESS;
-                }
+            if ($this->findAmmo($player) === null) {
+                return ItemUseResult::FAIL;
             }
+            self::$chargeStartTicks[$name] = $currentTick;
+            $this->playCrossbowSound($player, "item.crossbow.loading_start");
+            return ItemUseResult::NONE;
         }
 
-        return ItemUseResult::NONE;
+        $elapsed = $currentTick - self::$chargeStartTicks[$name];
+
+        if ($elapsed >= $this->getChargeDurationTicks()) {
+            if ($this->tryLoadProjectile($player)) {
+                $this->playCrossbowSound($player, "item.crossbow.loading_end");
+                unset(self::$chargeStartTicks[$name]);
+                self::$loadedDuringHold[$name] = $currentTick;
+                $player->getInventory()->setItemInHand($this);
+                return ItemUseResult::SUCCESS;
+            }
+            unset(self::$chargeStartTicks[$name]);
+            return ItemUseResult::FAIL;
+        }
+
+        return ItemUseResult::FAIL;
     }
 
     public function onReleaseUsing(Player $player, array &$returnedItems): ItemUseResult
     {
         $name = $player->getName();
+
+        unset(self::$loadedDuringHold[$name]);
 
         if ($this->isCharged()) {
             unset(self::$chargeStartTicks[$name]);
@@ -131,22 +128,17 @@ class Crossbow extends Tool implements Releasable
         unset(self::$chargeStartTicks[$name]);
 
         if ($startTick === null) {
-            $player->getServer()->getLogger()->info("[CROSSBOW] onReleaseUsing: no charge start recorded");
             return ItemUseResult::FAIL;
         }
 
         $ticksUsed = $player->getServer()->getTick() - $startTick;
-        $player->getServer()->getLogger()->info("[CROSSBOW] onReleaseUsing: ticksUsed=$ticksUsed (from our own tracking), needed=" . $this->getChargeDurationTicks());
 
         if ($ticksUsed >= $this->getChargeDurationTicks()) {
             if ($this->tryLoadProjectile($player)) {
-                $player->getServer()->getLogger()->info("[CROSSBOW] Loaded projectile!");
-                $player->getWorld()->addSound($player->getPosition(), new CrossbowLoadingEndSound());
+                $this->playCrossbowSound($player, "item.crossbow.loading_end");
+                $player->getInventory()->setItemInHand($this);
                 return ItemUseResult::SUCCESS;
             }
-            $player->getServer()->getLogger()->info("[CROSSBOW] No ammo found!");
-        } else {
-            $player->getServer()->getLogger()->info("[CROSSBOW] Not charged long enough ($ticksUsed < " . $this->getChargeDurationTicks() . ")");
         }
 
         return ItemUseResult::FAIL;
@@ -158,17 +150,14 @@ class Crossbow extends Tool implements Releasable
         if ($offhand instanceof Arrow) {
             return $offhand;
         }
-
         foreach ($player->getInventory()->getContents() as $item) {
             if ($item instanceof Arrow) {
                 return $item;
             }
         }
-
         if ($player->isCreative()) {
             return VanillaItems::ARROW();
         }
-
         return null;
     }
 
@@ -181,52 +170,47 @@ class Crossbow extends Tool implements Releasable
 
         $projectileCopy = clone $ammo;
         $projectileCopy->setCount(1);
-        $this->setChargedProjectiles([$projectileCopy]);
+        $this->setChargedItem($projectileCopy);
 
         if (!$player->isCreative()) {
             $ammoToRemove = clone $ammo;
             $ammoToRemove->setCount(1);
             $player->getInventory()->removeItem($ammoToRemove);
         }
-
         return true;
     }
 
     private function performShooting(Player $player, Vector3 $directionVector): void
     {
-        $chargedProjectiles = $this->getChargedProjectiles();
-        if (count($chargedProjectiles) === 0) {
+        if (!$this->isCharged()) {
             return;
         }
 
-        $this->clearChargedProjectiles();
+        $this->clearChargedItem();
         $location = $player->getLocation();
 
-        foreach ($chargedProjectiles as $projectileItem) {
-            $arrowEntity = new ArrowEntity(
-                Location::fromObject(
-                    $player->getEyePos(),
-                    $player->getWorld(),
-                    ($location->yaw > 180 ? 360 : 0) - $location->yaw,
-                    -$location->pitch
-                ),
-                $player,
-                false
-            );
+        $arrowEntity = new ArrowEntity(
+            Location::fromObject(
+                $player->getEyePos(),
+                $player->getWorld(),
+                ($location->yaw > 180 ? 360 : 0) - $location->yaw,
+                -$location->pitch
+            ),
+            $player,
+            false
+        );
 
-            $arrowEntity->setMotion($directionVector->normalize()->multiply(self::ARROW_POWER));
+        $arrowEntity->setMotion($directionVector->normalize()->multiply(self::ARROW_POWER));
 
-            $ev = new ProjectileLaunchEvent($arrowEntity);
-            $ev->call();
-            if ($ev->isCancelled()) {
-                $arrowEntity->flagForDespawn();
-                continue;
-            }
-
-            $arrowEntity->spawnToAll();
+        $ev = new ProjectileLaunchEvent($arrowEntity);
+        $ev->call();
+        if ($ev->isCancelled()) {
+            $arrowEntity->flagForDespawn();
+            return;
         }
 
-        $player->getWorld()->addSound($player->getPosition(), new CrossbowShootSound());
+        $arrowEntity->spawnToAll();
+        $this->playCrossbowSound($player, "item.crossbow.shoot");
 
         if (!$player->isCreative()) {
             $this->applyDamage(1);
@@ -235,11 +219,22 @@ class Crossbow extends Tool implements Releasable
 
     public function canStartUsingItem(Player $player): bool
     {
-        // If already tracking a charge, keep returning true so setUsingItem(true) is maintained
-        if (isset(self::$chargeStartTicks[$player->getName()])) {
+        $name = $player->getName();
+
+        if (isset(self::$justFired[$name])) {
+            unset(self::$justFired[$name]);
+            return false;
+        }
+
+        if ($this->isCharged()) {
+            return false;
+        }
+
+        if (isset(self::$chargeStartTicks[$name])) {
             return true;
         }
-        return !$this->isCharged() && $this->findAmmo($player) !== null;
+
+        return $this->findAmmo($player) !== null;
     }
 
     public function getFuelTime(): int
